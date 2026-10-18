@@ -9,7 +9,7 @@ Jira 프로젝트를 Work Breakdown Structure의 양식으로 변환합니다.
 
 ## 변환규칙
 
-- 가중치에는 story point estimate 값이 들어간다.
+- 가중치에는 story point estimate 값이 실수값 그대로 들어간다.
 - 에픽과 스토리에 할당된 기간은 우측 달력에 #B4C7E7 색으로 칠한다.
 - 서브태스크에 할당된 기간은 우측 달력에 #DDEBF7 색으로 칠한다.
 - 진행률은 완료되었으면 100% 아니면 0%이다.
