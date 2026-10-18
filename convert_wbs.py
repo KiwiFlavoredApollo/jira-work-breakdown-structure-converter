@@ -82,7 +82,7 @@ def read_issues(path: Path, encoding: str | None) -> list[Issue]:
     if not required.issubset(reader.fieldnames or []):
         raise ValueError(f"CSV 필수 열 누락: {', '.join(sorted(required - set(reader.fieldnames or [])))}")
     records = list(reader)
-    ids = {r.get("이슈 ID", ""): r["이슈 키"] for r in records}
+    ids = {r["이슈 ID"]: r["이슈 키"] for r in records if r.get("이슈 ID")}
     issues: dict[str, Issue] = {}
     for row in records:
         key = row["이슈 키"].strip()
@@ -183,18 +183,25 @@ def convert(csv_path: Path, template: Path, output: Path, encoding: str | None =
     if 11 not in rows:
         raise ValueError("양식에 데이터 서식 행(11행)이 없습니다.")
     prototype = deepcopy(rows[11])
-    cells = {c.get("r"): c for row in data for c in row}
-
-    def put(reference: str, value: str | int | float | None) -> None:
-        write_cell(cells[reference], value)
-
-    dates = [d for issue in issues for d in (issue.start, issue.end) if d]
-    first = min(dates, default=date.today())
-    first -= timedelta(days=first.weekday())
-    days = max(100, (max(dates, default=first) - first).days + 1)
-    if days > 16374 or len(issues) > 1048566:
-        raise ValueError("Excel 최대 행 또는 열 수를 초과합니다.")
-    last_col = column(10 + days)
+    # 상단 달력은 수정하지 않고 양식 7행의 Excel 날짜를 읽습니다.
+    properties = workbook.find(tag("workbookPr"))
+    use_1904 = properties is not None and properties.get("date1904") in {"1", "true"}
+    epoch = date(1904, 1, 1) if use_1904 else date(1899, 12, 30)
+    calendar: dict[int, date] = {}
+    for cell in rows.get(7, []):
+        letters = re.sub(r"\d", "", cell.get("r", ""))
+        index = 0
+        for letter in letters:
+            index = index * 26 + ord(letter) - ord("A") + 1
+        value = cell.find(tag("v"))
+        if index >= 11 and value is not None and cell.get("t") not in {"s", "inlineStr"}:
+            calendar[index] = epoch + timedelta(days=float(value.text or "0"))
+    if not calendar:
+        raise ValueError("양식 7행에 달력 날짜가 없습니다.")
+    if len(issues) > 1048566:
+        raise ValueError("Excel 최대 행 수를 초과합니다.")
+    last_column = max(calendar)
+    last_col = column(last_column)
     last_row = 10 + len(issues)
     styles = ET.fromstring(parts["xl/styles.xml"])
     fills = styles.find(tag("fills"))
@@ -209,77 +216,51 @@ def convert(csv_path: Path, template: Path, output: Path, encoding: str | None =
         ET.SubElement(pattern, tag("bgColor"), indexed="64")
     fills.set("count", str(len(fills)))
     style_cache: dict[tuple[str, str], str] = {}
+    # 가중치의 원래 소수값을 표시합니다. 양식의 백분율/정수 서식은 사용하지 않습니다.
+    weight_base = next(c for c in prototype if c.get("r") == "I11")
+    weight_style = deepcopy(xfs[int(weight_base.get("s", "0"))])
+    weight_style.set("numFmtId", "0")  # General: 0.5를 50%나 1로 표시하지 않습니다.
+    weight_style.set("applyNumberFormat", "1")
+    weight_style_id = str(len(xfs))
+    xfs.append(weight_style)
 
     def colored_style(base: str, color: str) -> str:
         key = base, color
         if key not in style_cache:
             xf = deepcopy(xfs[int(base)])
-            xf.set("fillId", str(fill_ids[color]))
+            xf.set("fillId", str(fill_ids[color]) if color else "0")
             xf.set("applyFill", "1")
             style_cache[key] = str(len(xfs))
             xfs.append(xf)
         return style_cache[key]
 
-    # 기존 날짜/주차를 실제 일정으로 교체합니다.
-    for row_num in (7, 8, 9, 10):
-        row = rows[row_num]
-        old_cells = list(row)
-        for cell in old_cells:
-            if re.sub(r"\d", "", cell.get("r", "")) not in list("ABCDEFGHIJ"):
-                row.remove(cell)
-        source = next((c for c in old_cells if c.get("r") == f"K{row_num}"), None)
-        for offset in range(days):
-            current = first + timedelta(days=offset)
-            cell = deepcopy(source) if source is not None else ET.Element(tag("c"))
-            cell.set("r", f"{column(11 + offset)}{row_num}")
-            value: str | int | None = None
-            if row_num == 7:
-                value = (current - date(1899, 12, 30)).days
-            elif row_num == 9 and offset % 7 == 0:
-                value = f"W{offset // 7 + 1}\n{current:%m/%d}"
-            elif row_num == 10:
-                value = f"{current.day}\n{'월화수목금토일'[current.weekday()]}"
-                cell.set("s", "38" if current.weekday() >= 5 else "37")
-            write_cell(cell, value)
-            row.append(cell)
-    merges = root.find(tag("mergeCells"))
-    if merges is not None:
-        for merge in list(merges):
-            if not merge.get("ref", "").startswith("A"):
-                merges.remove(merge)
-        for offset in range(0, days, 7):
-            ET.SubElement(merges, tag("mergeCell"), ref=f"{column(11 + offset)}9:{column(10 + min(offset + 7, days))}9")
-        merges.set("count", str(len(merges)))
     for row in list(data):
         if int(row.get("r", "0")) >= 11:
             data.remove(row)
     for number, issue in enumerate(issues, 11):
         row = ET.SubElement(data, tag("row"), r=str(number), ht="30", customHeight="1", outlineLevel=str(min(issue.depth, 7)))
-        values = [issue.kind, issue.key, "    " * issue.depth + issue.summary, issue.kind, None, issue.assignee,
-                  (issue.start - date(1899, 12, 30)).days if issue.start else None,
-                  (issue.end - date(1899, 12, 30)).days if issue.end else None, issue.weight, int(issue.done)]
-        for index in range(1, 11 + days):
+        category = issue.summary if issue.kind.strip().lower() in {"에픽", "epic"} else None
+        values = [category, issue.key, issue.summary, issue.kind, None, issue.assignee,
+                  (issue.start - epoch).days if issue.start else None,
+                  (issue.end - epoch).days if issue.end else None, issue.weight, int(issue.done)]
+        for index in range(1, last_column + 1):
             source = prototype[index - 1] if index <= len(prototype) else prototype[-1]
             cell = deepcopy(source)
             cell.set("r", f"{column(index)}{number}")
             write_cell(cell, values[index - 1] if index <= 10 else None)
-            if index > 10 and issue.start and issue.end:
-                current = first + timedelta(days=index - 11)
-                if issue.start <= current <= issue.end:
+            if index == 9:
+                cell.set("s", weight_style_id)
+            # 양식 행의 배경색을 복사하지 않고 달력의 해당 기간만 칠합니다.
+            cell.set("s", colored_style(cell.get("s", "0"), ""))
+            if index in calendar and issue.start and issue.end:
+                # 시작일과 종료일을 모두 포함하며 해당 기간 밖은 칠하지 않습니다.
+                if issue.start <= calendar[index] <= issue.end and sort_key(issue)[0] in {0, 1, 3}:
                     color = "DDEBF7" if sort_key(issue)[0] == 3 else "B4C7E7"
                     cell.set("s", colored_style(cell.get("s", "0"), color))
             row.append(cell)
     for conditional in list(root.findall(tag("conditionalFormatting"))):
         root.remove(conditional)  # 양식의 진행률 색상 규칙 대신 이슈 유형 색상을 사용합니다.
-    put("C3", ", ".join(dict.fromkeys(i.project for i in issues if i.project)))
-    put("C4", ", ".join(sorted({i.assignee for i in issues if i.assignee})))
-    put("C5", f"{min(dates):%Y-%m-%d} ~ {max(dates):%Y-%m-%d}" if dates else "")
-    put("H4", None)  # 목표치의 업무상 정의가 없어 계산하지 않습니다.
-    put("J4", sum(i.done for i in issues) / len(issues))
     root.find(tag("dimension")).set("ref", f"A1:{last_col}{last_row}")
-    cols = root.find(tag("cols"))
-    if cols is not None and days > 100:
-        ET.SubElement(cols, tag("col"), min="111", max=str(10 + days), width="3", customWidth="1")
     for defined in workbook.findall(f"{tag('definedNames')}/{tag('definedName')}"):
         if defined.get("name") == "_xlnm.Print_Area" and "프로젝트 WBS" in (defined.text or ""):
             defined.text = f"'프로젝트 WBS'!$A$1:${last_col}${last_row}"
@@ -287,8 +268,8 @@ def convert(csv_path: Path, template: Path, output: Path, encoding: str | None =
     parts[sheet_path] = ET.tostring(root, encoding="utf-8", xml_declaration=True)
     parts["xl/styles.xml"] = ET.tostring(styles, encoding="utf-8", xml_declaration=True)
     parts["xl/workbook.xml"] = ET.tostring(workbook, encoding="utf-8", xml_declaration=True)
-    # 독점 생성으로 기존 결과 파일의 덮어쓰기를 방지합니다.
-    with output.open("xb") as stream, ZipFile(stream, "w") as archive:
+    # 같은 이름의 결과 파일이 있으면 덮어씁니다.
+    with output.open("wb") as stream, ZipFile(stream, "w") as archive:
         for name, content in parts.items():
             archive.writestr(name, content, compress_type=8)
     return len(issues)
