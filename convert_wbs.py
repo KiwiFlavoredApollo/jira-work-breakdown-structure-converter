@@ -208,7 +208,7 @@ def convert(csv_path: Path, template: Path, output: Path, encoding: str | None =
     xfs = styles.find(tag("cellXfs"))
     assert fills is not None and xfs is not None
     fill_ids: dict[str, int] = {}
-    for color in ("B4C7E7", "DDEBF7"):
+    for color in ("B4C7E7", "DDEBF7", "BDD7EE", "EDF2FA", "FFF2CC"):
         fill_ids[color] = len(fills)
         fill = ET.SubElement(fills, tag("fill"))
         pattern = ET.SubElement(fill, tag("patternFill"), patternType="solid")
@@ -238,6 +238,7 @@ def convert(csv_path: Path, template: Path, output: Path, encoding: str | None =
         if int(row.get("r", "0")) >= 11:
             data.remove(row)
     for number, issue in enumerate(issues, 11):
+        issue_rank = sort_key(issue)[0]
         row = ET.SubElement(data, tag("row"), r=str(number), ht="30", customHeight="1", outlineLevel=str(min(issue.depth, 7)))
         category = issue.summary if issue.kind.strip().lower() in {"에픽", "epic"} else None
         values = [category, issue.key, issue.summary, issue.kind, None, issue.assignee,
@@ -250,12 +251,22 @@ def convert(csv_path: Path, template: Path, output: Path, encoding: str | None =
             write_cell(cell, values[index - 1] if index <= 10 else None)
             if index == 9:
                 cell.set("s", weight_style_id)
-            # 양식 행의 배경색을 복사하지 않고 달력의 해당 기간만 칠합니다.
+            # 양식의 배경색을 지우고 유형별 표 영역 및 달력 규칙을 적용합니다.
             cell.set("s", colored_style(cell.get("s", "0"), ""))
+            if index <= 10:
+                color = ""
+                if issue_rank == 0:
+                    color = "BDD7EE"
+                elif issue_rank == 1:
+                    color = "EDF2FA"
+                elif index in {6, 10}:
+                    color = "FFF2CC"
+                if color:
+                    cell.set("s", colored_style(cell.get("s", "0"), color))
             if index in calendar and issue.start and issue.end:
                 # 시작일과 종료일을 모두 포함하며 해당 기간 밖은 칠하지 않습니다.
-                if issue.start <= calendar[index] <= issue.end and sort_key(issue)[0] in {0, 1, 3}:
-                    color = "DDEBF7" if sort_key(issue)[0] == 3 else "B4C7E7"
+                if issue.start <= calendar[index] <= issue.end and issue_rank in {0, 1, 3}:
+                    color = "DDEBF7" if issue_rank == 3 else "B4C7E7"
                     cell.set("s", colored_style(cell.get("s", "0"), color))
             row.append(cell)
     for conditional in list(root.findall(tag("conditionalFormatting"))):

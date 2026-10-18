@@ -27,6 +27,9 @@ class ConversionTest(unittest.TestCase):
             Issue("T-1", "Epic", "Epic", "", "", start, end, 0.125, False, ""),
             Issue("T-2", "Story", "Story", "T-1", "", start, end, 1.75, True, "", 1),
             Issue("T-3", "Subtask", "Subtask", "T-2", "", start, start, 2.5, False, "", 2),
+            Issue("T-4", "Task", "Task", "", "", start, end, 0.5, False, ""),
+            Issue("T-5", "에픽", "에픽", "", "", start, end, 1.0, False, ""),
+            Issue("T-6", "스토리", "스토리", "T-5", "", start, end, 1.0, False, "", 1),
         ]
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "result.xlsx"
@@ -55,18 +58,25 @@ class ConversionTest(unittest.TestCase):
 
         for row, issue in enumerate(issues, 11):
             for letter in "ABCDEFGHIJ":
-                style = xfs[int(cells[f"{letter}{row}"].get("s", "0"))]
-                self.assertEqual(style.get("fillId"), "0", f"{letter}{row}")
+                expected = None
+                if issue.kind in {"Epic", "에픽"}:
+                    expected = "FFBDD7EE"
+                elif issue.kind in {"Story", "스토리"}:
+                    expected = "FFEDF2FA"
+                elif letter in "FJ":
+                    expected = "FFFFF2CC"
+                self.assertEqual(color(f"{letter}{row}"), expected, f"{letter}{row}")
             weight = cells[f"I{row}"]
             self.assertEqual(float(weight.findtext(tag("v"))), issue.weight)
             self.assertEqual(xfs[int(weight.get("s"))].get("numFmtId"), "0")
             self.assertNotIn(color(f"K{row}"), {"FFB4C7E7", "FFDDEBF7"})
             self.assertNotIn(color(f"N{row}"), {"FFB4C7E7", "FFDDEBF7"})
-        for row in (11, 12):
+        for row in (11, 12, 15, 16):
             self.assertEqual(color(f"L{row}"), "FFB4C7E7")
             self.assertEqual(color(f"M{row}"), "FFB4C7E7")
         self.assertEqual(color("L13"), "FFDDEBF7")
         self.assertNotEqual(color("M13"), "FFDDEBF7")
+        self.assertIsNone(color("L14"))
 
 
 if __name__ == "__main__":
